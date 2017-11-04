@@ -35,6 +35,8 @@ from nova.virt.libvirt import config as vconfig
 from nova.virt.libvirt import designer
 from nova.virt import osinfo
 
+from .netronome import NetronomeResourceManage
+
 LOG = logging.getLogger(__name__)
 
 libvirt_vif_opts = [
@@ -42,9 +44,21 @@ libvirt_vif_opts = [
                 default=True,
                 help='Use virtio for bridge interfaces with KVM/QEMU'),
 ]
+acc_opts = [cfg.StrOpt('nic_vender',
+                help='Set smart nic vender'),
+            cfg.StrOpt('port_prefix',
+                help='Set port name prefix'),
+            cfg.IntOpt('port_index_max',
+                default=59,
+                help='The max index of port_index'),
+            cfg.StrOpt('ovs_bridge',
+                help='Set ovs bridge name of smart nic'),
+
+]
 
 CONF = cfg.CONF
 CONF.register_opts(libvirt_vif_opts, 'libvirt')
+CONF.register_opts(acc_opts, 'acc')
 CONF.import_opt('use_ipv6', 'nova.netconf')
 
 # vhostuser queues support
@@ -201,15 +215,34 @@ class LibvirtGenericVIFDriver(object):
                               inst_type, virt_type, host):
         conf = self.get_base_config(instance, vif, image_meta,
                                     inst_type, virt_type)
+        # add by bob
+        if CONF.acc.nic_vender == 'netronome' or CONF.acc.nic_vender == 'Netronome':
+            mode, sock_path = self._get_netronome_port_settings()
+            if mode and sock_path:
+                designer.set_vif_host_backend_vhostuser_config(conf, mode, sock_path)
+        else :
+            designer.set_vif_host_backend_ovs_config(
+                conf, self.get_bridge_name(vif),
+                self.get_ovs_interfaceid(vif),
+                self.get_vif_devname(vif))
 
-        designer.set_vif_host_backend_ovs_config(
-            conf, self.get_bridge_name(vif),
-            self.get_ovs_interfaceid(vif),
-            self.get_vif_devname(vif))
-
-        designer.set_vif_bandwidth_config(conf, inst_type)
+            designer.set_vif_bandwidth_config(conf, inst_type)
 
         return conf
+    # add by bob
+    def _get_netronome_port_settings(self):
+        '''read nova.conf [netronome] current_index to get available port to use'''
+        mode = 'client'
+        bridge_name = CONF.acc.ovs_bridge
+        netro = NetronomeResourceManage(bridge_name=bridge_name)
+        port_id = netro.get_available_port()
+        
+        if port_id >= 0 :
+            path = "/tmp/virtiorelay%s.sock" % (port_id)
+            LOG.debug('nova.conf store mode is %s and path is %s' % (mode, path))
+            return mode, path
+        else:
+            raise exception.NetronomePortNotAvailable()
 
     def get_config_ovs_hybrid(self, instance, vif, image_meta,
                               inst_type, virt_type, host):
@@ -480,7 +513,24 @@ class LibvirtGenericVIFDriver(object):
 
     def plug_ovs_bridge(self, instance, vif):
         """No manual plugging required."""
-        pass
+        # add by bob
+        if CONF.acc.nic_vender == 'netronome' or CONF.acc.nic_vender == 'Netronome':
+            bridge = CONF.acc.ovs_bridge
+            netro = NetronomeResourceManage(bridge_name=bridge)
+            port_id = netro.get_available_port()
+            port_name = netro.get_port_name(port_id)
+            iface_id = self.get_ovs_interfaceid(vif)
+            mtu = vif['network'].get_meta('mtu')
+            if port_name:
+                linux_net.create_ovs_vif_port(
+                    bridge,
+                    port_name, iface_id, vif['address'],
+                    instance.uuid, mtu,
+                    virtio_relay=port_id)
+                LOG.debug("Success add port:%s on bridge:%s" % (port_name, bridge))
+                netro.bind_port(port_id, iface_id, instance.uuid)
+            else:
+                LOG.debug("Fail add port on bridge:%s " % (bridge))
 
     def _plug_bridge_with_port(self, instance, vif, port):
         iface_id = self.get_ovs_interfaceid(vif)
@@ -589,6 +639,23 @@ class LibvirtGenericVIFDriver(object):
                 vif['profile']['pci_slot'],
                 mac_addr=vif['address'],
                 vlan=vif['details'][network_model.VIF_DETAILS_VLAN])
+        # add by bob
+        if CONF.acc.nic_vender == 'netronome'or CONF.acc.nic_vender == 'Netronome':
+            bridge = CONF.acc.ovs_bridge
+            netro = NetronomeResourceManage(bridge_name=bridge)
+            port_name = netro.get_port_name_by_pci_slot(vif['profile']['pci_slot'])
+            port_id = netro.get_port_id(port_name)
+            iface_id = self.get_ovs_interfaceid(vif)
+            mtu = vif['network'].get_meta('mtu')
+            if port_name :
+                linux_net.create_ovs_vif_port(
+                    bridge,
+                    port_name, iface_id, vif['address'],
+                    instance.uuid, mtu)
+                LOG.debug("Success add port:%s on bridge:%s" %(port_name, bridge))
+                netro.bind_port(port_id, iface_id, instance.uuid)
+            else:
+                LOG.debug("Fail add port on bridge:%s with pci_slot:%s" % (bridge, vif['profile']['pci_slot']))
 
     def plug_hostdev_physical(self, instance, vif):
         pass
@@ -767,7 +834,17 @@ class LibvirtGenericVIFDriver(object):
 
     def unplug_ovs_bridge(self, instance, vif):
         """No manual unplugging required."""
-        pass
+        # add by bob
+        if CONF.acc.nic_vender == 'netronome' or CONF.acc.nic_vender == 'Netronome':
+            bridge = CONF.acc.ovs_bridge
+            netro = NetronomeResourceManage(bridge_name=bridge)
+            iface_id = self.get_ovs_interfaceid(vif)
+            port_name = netro.get_port_name_by_bind_port(iface_id)
+            if port_name:            
+                linux_net.delete_ovs_vif_port(bridge, port_name, False)
+                LOG.debug("Success delete port:%s on bridge:%s" % (port_name, bridge))
+                port_id = netro.get_port_id(port_name)
+                netro.unbind_port(port_id)
 
     def unplug_ovs_hybrid(self, instance, vif):
         """UnPlug using hybrid strategy
@@ -858,6 +935,16 @@ class LibvirtGenericVIFDriver(object):
             # the same VF will not be affected by the existing MAC.
             linux_net.set_vf_interface_vlan(vif['profile']['pci_slot'],
                                             mac_addr=vif['address'])
+        # add by bob
+        if CONF.acc.nic_vender == 'netronome' or CONF.acc.nic_vender == 'Netronome':
+            bridge = CONF.acc.ovs_bridge
+            netro = NetronomeResourceManage(bridge_name=bridge)
+            port_name = netro.get_port_name_by_pci_slot(vif['profile']['pci_slot'])
+            if port_name:
+                linux_net.delete_ovs_vif_port(bridge, port_name, False)
+                LOG.debug("Success delete port:%s on bridge:%s" % (port_name, bridge))
+                port_id = netro.get_port_id(port_name)
+                netro.unbind_port(port_id)
 
     def unplug_hostdev_physical(self, instance, vif):
         pass
@@ -975,3 +1062,4 @@ class LibvirtGenericVIFDriver(object):
             raise exception.NovaException(
                 _("Unexpected vif_type=%s") % vif_type)
         func(instance, vif)
+

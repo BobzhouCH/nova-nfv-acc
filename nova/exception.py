@@ -2135,3 +2135,6 @@ class NfvPortNotFound(NotFound):
 
 class NfvInterfaceNotFound(NotFound):
     msg_fmt = _("Nfv Interface record %(interface) could not be found.")
+
+class NetronomePortNotAvailable(Invalid):
+    msg_fmt = _("There is no more Netronome port availiable")
