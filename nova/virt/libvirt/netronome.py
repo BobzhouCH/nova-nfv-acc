@@ -19,34 +19,30 @@ class NetronomeResourceManage:
         else:
             self.tag_config_path = '/etc/nova/netronome_ports.json'
 
-        # has problem in nova
-        # self.bridge_port_list = utils.execute('ovs-vsctl','list-ports',self.bridge_name, run_as_root=True)
-        # LOG.info('bridge_port_list is %s' % str(self.bridge_port_list))
-
-        # self._resource_init()
-    '''
+        self._resource_init()
+    
     def _resource_init(self):
         #scan port resource usage and update json file
+        cmd = 'ovs-vsctl list-ports %s' % (self.bridge_name)
+        self.bridge_port_list = utils.execute("sh", "-c",cmd , **{'run_as_root': 'True'})[0].split("\n")[:-1]
         port_list = self._read_config()
         for port in port_list:
             if self._ovs_port_check(port['port_name']):
                 port['is_used'] = True
-                LOG.info('set port %s' % port)
+
             else:
                 port['is_used'] = False
                 port['bind_port'] = None
                 port['bind_instance'] = None
-                LOG.info('unset port %s' % port)
 
         self._write_config(port_list)
 
     def _ovs_port_check(self, port_name):
-        for port in bridge_port_list:
+        for port in self.bridge_port_list:
             if port_name == port.strip():
                 return True
 
         return False
-    '''
 
     def get_available_port(self):
         '''get a available port for using'''
