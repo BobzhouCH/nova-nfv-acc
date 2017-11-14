@@ -215,31 +215,26 @@ class LibvirtGenericVIFDriver(object):
                               inst_type, virt_type, host):
         conf = self.get_base_config(instance, vif, image_meta,
                                     inst_type, virt_type)
-        # add by bob
-        if CONF.acc.nic_vender == 'netronome' or CONF.acc.nic_vender == 'Netronome':
-            mode, sock_path = self._get_netronome_port_settings()
-            if mode and sock_path:
-                designer.set_vif_host_backend_vhostuser_config(conf, mode, sock_path)
-        else :
-            designer.set_vif_host_backend_ovs_config(
-                conf, self.get_bridge_name(vif),
-                self.get_ovs_interfaceid(vif),
-                self.get_vif_devname(vif))
 
-            designer.set_vif_bandwidth_config(conf, inst_type)
+        designer.set_vif_host_backend_ovs_config(
+            conf, self.get_bridge_name(vif),
+            self.get_ovs_interfaceid(vif),
+            self.get_vif_devname(vif))
+
+        designer.set_vif_bandwidth_config(conf, inst_type)
 
         return conf
     # add by bob
-    def _get_netronome_port_settings(self):
+    def _get_netronome_port_settings(self, bind_port):
         '''read nova.conf [netronome] current_index to get available port to use'''
         mode = 'client'
         bridge_name = CONF.acc.ovs_bridge
         netro = NetronomeResourceManage(bridge_name=bridge_name)
-        port_id = netro.get_available_port()
+        port_id = netro.get_available_port(bind_port)
         
         if port_id >= 0 :
             path = "/tmp/virtiorelay%s.sock" % (port_id)
-            LOG.debug('nova.conf store mode is %s and path is %s' % (mode, path))
+            LOG.debug('Got netronome port with mode: %s and path: %s' % (mode, path))
             return mode, path
         else:
             raise exception.NetronomePortNotAvailable()
@@ -265,6 +260,18 @@ class LibvirtGenericVIFDriver(object):
                                               inst_type,
                                               virt_type,
                                               host)
+    # add by bob
+    def get_config_ovs_acc(self, instance, vif, image_meta,
+                       inst_type, virt_type, host):
+        conf = self.get_base_config(instance, vif, image_meta,
+                                    inst_type, virt_type)
+        iface_id = self.get_ovs_interfaceid(vif)
+        mode, sock_path = self._get_netronome_port_settings(iface_id)
+        if mode and sock_path:
+            designer.set_vif_host_backend_vhostuser_config(conf, mode, sock_path)
+
+        return conf
+
 
     def get_config_ivs_hybrid(self, instance, vif, image_meta,
                               inst_type, virt_type, host):
@@ -513,24 +520,28 @@ class LibvirtGenericVIFDriver(object):
 
     def plug_ovs_bridge(self, instance, vif):
         """No manual plugging required."""
+        pass
+
+    def plug_ovs_acc(self, instance, vif):
+        """No manual plugging required."""
         # add by bob
-        if CONF.acc.nic_vender == 'netronome' or CONF.acc.nic_vender == 'Netronome':
-            bridge = CONF.acc.ovs_bridge
-            netro = NetronomeResourceManage(bridge_name=bridge)
-            port_id = netro.get_available_port()
-            port_name = netro.get_port_name(port_id)
-            iface_id = self.get_ovs_interfaceid(vif)
-            mtu = vif['network'].get_meta('mtu')
-            if port_name:
-                linux_net.create_ovs_vif_port(
-                    bridge,
-                    port_name, iface_id, vif['address'],
-                    instance.uuid, mtu,
-                    virtio_relay=port_id)
-                LOG.debug("Success add port:%s on bridge:%s" % (port_name, bridge))
-                netro.bind_port(port_id, iface_id, instance.uuid)
-            else:
-                LOG.debug("Fail add port on bridge:%s " % (bridge))
+        #if CONF.acc.nic_vender == 'netronome' or CONF.acc.nic_vender == 'Netronome':
+        bridge = CONF.acc.ovs_bridge
+        netro = NetronomeResourceManage(bridge_name=bridge)
+        iface_id = self.get_ovs_interfaceid(vif)
+        port_id = netro.get_available_port(iface_id)
+        port_name = netro.get_port_name(port_id)
+        mtu = vif['network'].get_meta('mtu')
+        if port_name:
+            linux_net.create_ovs_vif_port(
+                bridge,
+                port_name, iface_id, vif['address'],
+                instance.uuid, mtu,
+                virtio_relay=port_id)
+            LOG.debug("Success add port:%s on bridge:%s" % (port_name, bridge))
+            netro.bind_port(port_id, iface_id, instance.uuid)
+        else:
+            LOG.debug("Fail add port on bridge:%s " % (bridge))
 
     def _plug_bridge_with_port(self, instance, vif, port):
         iface_id = self.get_ovs_interfaceid(vif)
@@ -834,17 +845,21 @@ class LibvirtGenericVIFDriver(object):
 
     def unplug_ovs_bridge(self, instance, vif):
         """No manual unplugging required."""
+        pass
+
+    def unplug_ovs_acc(self, instance, vif):
+        """No manual unplugging required."""
         # add by bob
-        if CONF.acc.nic_vender == 'netronome' or CONF.acc.nic_vender == 'Netronome':
-            bridge = CONF.acc.ovs_bridge
-            netro = NetronomeResourceManage(bridge_name=bridge)
-            iface_id = self.get_ovs_interfaceid(vif)
-            port_name = netro.get_port_name_by_bind_port(iface_id)
-            if port_name:            
-                linux_net.delete_ovs_vif_port(bridge, port_name, False)
-                LOG.debug("Success delete port:%s on bridge:%s" % (port_name, bridge))
-                port_id = netro.get_port_id(port_name)
-                netro.unbind_port(port_id)
+        #if CONF.acc.nic_vender == 'netronome' or CONF.acc.nic_vender == 'Netronome':
+        bridge = CONF.acc.ovs_bridge
+        netro = NetronomeResourceManage(bridge_name=bridge)
+        iface_id = self.get_ovs_interfaceid(vif)
+        port_name = netro.get_port_name_by_bind_port(iface_id)
+        if port_name:
+            linux_net.delete_ovs_vif_port(bridge, port_name, False)
+            LOG.debug("Success delete port:%s on bridge:%s" % (port_name, bridge))
+            port_id = netro.get_port_id(port_name)
+            netro.unbind_port(port_id)
 
     def unplug_ovs_hybrid(self, instance, vif):
         """UnPlug using hybrid strategy
@@ -1062,4 +1077,3 @@ class LibvirtGenericVIFDriver(object):
             raise exception.NovaException(
                 _("Unexpected vif_type=%s") % vif_type)
         func(instance, vif)
-

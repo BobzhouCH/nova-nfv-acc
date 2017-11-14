@@ -44,12 +44,18 @@ class NetronomeResourceManage:
 
         return False
 
-    def get_available_port(self):
-        '''get a available port for using'''
-        port_list = self._read_config()
-        for port in port_list:
-            if not port['is_used']:
-                return port['port_id']
+    def get_available_port(self, bind_port):
+        '''get a available port for using.
+        if exist a port using bind_port. return this port id
+        '''
+        port_id = self.get_port_id_by_bind_port(bind_port)
+        if port_id >= 0:
+            return port_id
+        else:
+            port_list = self._read_config()
+            for port in port_list:
+                if not port['is_used']:
+                    return port['port_id']
 
         return None
 
@@ -112,6 +118,15 @@ class NetronomeResourceManage:
         port_list = self._read_config()
         for port in port_list:
             if port['port_name'] == port_name:
+                return port['port_id']
+
+        return None
+
+    def get_port_id_by_bind_port(self, bind_port_id):
+        '''get port name by binded port id'''
+        port_list = self._read_config()
+        for port in port_list:
+            if port['bind_port'] == str(bind_port_id):
                 return port['port_id']
 
         return None
